@@ -1,0 +1,141 @@
+---
+title: "Mapping Artwork"
+author: "Aishwarya Venkat"
+date: "September 29, 2017"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+
+library(rgdal); library(raster); library(maptools); library(rgeos); library(spatstat); library(tidyr); library(dplyr); library(RCurl);
+library(sp); library(rgeos); library(latticeExtra); library(viridis);
+
+```
+
+## Process Data
+
+```{r cars}
+
+download.file("http://wsgw.mass.gov/data/gispub/shape/state/towns.zip", "towns.zip")
+unzip("towns.zip")
+
+download.file("https://data.cityofboston.gov/api/views/af56-j7tb/files/8bdce8d8-052e-4b82-bd38-4d8c7afbd4ba?filename=Bos_neighborhoods.zip", "Bos_neighborhoods.zip")
+unzip("Bos_neighborhoods.zip")
+
+nbh<-readOGR("./Bos_neighborhoods (1)/Bos_neighborhoods.shp")
+twn<-readOGR("TOWNS_POLY.shp")
+
+twn<-spTransform(twn, CRS("+init=epsg:4326"))
+twn$TOWN<-as.character(twn$TOWN)
+
+# Definition of Metro Boston:
+
+metrobos<-c("ARLINGTON", "BELMONT", "BOSTON", "BRAINTREE", "BROOKLINE", 
+            "CAMBRIDGE", "CANTON", "CHELSEA", "COHASSET", "DEDHAM", "DOVER", 
+            "EVERETT", "HINGHAM", "HOLBROOK", "HULL", "LEXINGTON", "LINCOLN", 
+            "LYNN", "MALDEN", "MEDFORD", "MELROSE", "MILTON", "NAHANT", 
+            "NEEDHAM", "NEWTON", "NORWOOD", "QUINCY", "RANDOLPH", "REVERE", 
+            "SAUGUS", "SOMOERVILLE", "STONEHAM", "SWAMPSCOTT", "WAKEFIELD", 
+            "WALTHAM", "WATERTOWN", "WELLESLEY", "WESTON", "WESTWOOD", 
+            "WEYMOUTH", "WINCHESTER", "WINTHROP", "WOBURN")
+metrobos<-twn[twn$TOWN %in% metrobos,]
+
+metrobos<-spTransform(metrobos, projection(nbh))
+
+nbh@data<-nbh@data[,1:4]; metrobos@data<-metrobos@data[,1:4]
+nbh@data<-nbh@data[,c(1,4,2,3)]; names(nbh)<-names(metrobos);
+
+nbh@data[] <- lapply(nbh@data, as.character)
+metrobos@data[] <- lapply(metrobos@data, as.character)
+
+metrobos<-spRbind(nbh, metrobos)
+metrobos_otl<-spTransform(metrobos, CRS("+init=epsg:4326"))
+metrobos_otl<-spTransform(metrobos_otl, CRS("+init=epsg:26986"))
+
+metrobos2<-gBuffer(metrobos, 50, byid = F)
+metrobos2<-spTransform(metrobos2, CRS("+init=epsg:26986"))
+
+```
+
+## Including Plots
+
+```{r read_csv}
+
+dat<-read.csv("./gbos_art.csv", header = T, stringsAsFactors = F)
+dat$lon<-as.numeric(dat$lon); dat$lat<-as.numeric(dat$lat);
+
+# Convert to SPDF
+
+dat_spdf<-SpatialPointsDataFrame(data.frame(dat$lon, dat$lat), data=dat)
+projection(dat_spdf)<-CRS("+init=epsg:4326")
+dat_spdf<-spTransform(dat_spdf, CRS("+init=epsg:26986"))
+
+rp<-ppp(dat_spdf@coords[,1], dat_spdf@coords[,2], window=as.owin(metrobos2))
+rd_art<-raster(density(rp, adjust=0.05, dimyx=c(2500, 2500)))
+
+par(oma=c(0,0,0,0), mar=c(0,0,0,0))
+spplot(rd_art, scales = list(draw = FALSE), 
+       col.regions = viridis(100), colorkey=FALSE,
+       par.settings = list(axis.line = list(col =  'transparent'))) + 
+  layer(sp.polygons(metrobos2, lwd = 0.05, col="grey"))
+
+```
+
+## Summary Tables
+
+
+```{r read_csv}
+
+capFirst <- function(s) {
+    paste(toupper(substring(s, 1, 1)), substring(s, 2), sep = "")
+}
+
+dat_spdf@data<-cbind(dat_spdf@data, over(dat_spdf, metrobos_otl))
+
+dat_spdf$TOWN<-tolower(dat_spdf$TOWN)
+dat_spdf$TOWN<-capFirst(dat_spdf$TOWN)
+
+df1<-dat_spdf@data %>% 
+  group_by(cat1) %>% tally() %>%
+  arrange(-n)
+
+df2<-dat_spdf@data %>% 
+  group_by(cat1, TOWN) %>% tally() %>%
+  arrange(-n)
+
+df3<-dcast(df2, TOWN~cat1)
+
+df3<-subset(df3, select=c("TOWN", "Statue", "Mural", "Sculpture",
+                          "Architecture", "Electrical Box"))
+
+df3[1:10,]
+
+#write.csv(df3, "./art_by_town.csv")
+
+```
+
+## Stacked bar chart of artwork by town
+
+```{r chart}
+
+cats<-df1[1:10,]$cat1
+
+df2<-data.frame(df2)
+df2<-df2[grep(paste(cats, collapse="|"), df2$cat1), ]
+
+df2$cat1<-factor(df2$cat1); df2$TOWN<-factor(df2$TOWN)
+
+names(df2)<-c("Category", "Town", "Count")
+
+p<-ggplot(df2, aes(Town))+
+  geom_bar(aes(fill = Category), position = position_stack(reverse = FALSE)) +
+ theme(legend.position = "top")
+  
+ggplotly(p) 
+
+
+```
+
+
+
+
